@@ -1,0 +1,6 @@
+age,income,education,sensitive_column,label
+25,50000,Bachelor,Yes,1
+32,60000,Master,No,0
+47,80000,PhD,No,1
+51,95000,Bachelor,Yes,0
+23,45000,Master,No,1
