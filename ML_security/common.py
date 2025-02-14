@@ -18,6 +18,7 @@ from sklearn.feature_selection import SelectPercentile, VarianceThreshold, Selec
 import io
 from fastapi import Request as request
 import json
+import logging
 
 
 app = FastAPI()
@@ -150,60 +151,43 @@ class PredictionRequest(BaseModel):
     Y: list  # List for target variable (optional for prediction)
 
 
-# Your route
-@app.post("/predict/")
-async def predict(
-    file: UploadFile = File(...),  # File to upload
-    X: str = Form(...),  # JSON string for X
-    Y: str = Form(...),  # JSON string for y
-):
-    try:
-        # Parse the JSON strings to actual data
-        X_data = json.loads(X)  # Deserialize the X data
-        Y_data = json.loads(Y)  # Deserialize the y data
-
-
-        # Read the CSV file and convert to DataFrame
-        contents = await file.read()
-        df = pd.read_csv(io.StringIO(contents.decode("utf-8")))
-
-
-        # Dummy prediction logic (replace with your actual logic)
-        predictions = [1 if sum(x) > 5 else 0 for x in X_data]  # Just an example for predictions
-
-
-        return {"predictions": predictions}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-import logging
 
 
 @app.post("/predict/")
 async def predict(
-    file: UploadFile = File(...),
-    X: str = Form(...),
-    Y: str = Form(...),
+    file: UploadFile = File(...),  # File upload
+    X: str = Form(...),  # Comma-separated feature column names
+    Y: str = Form(...),  # Target column name (single string)
 ):
     try:
-        # Log incoming X and y
         logging.info(f"Received X: {X}")
-        logging.info(f"Received y: {Y}")
-       
-        # Deserialize the JSON strings to actual data
-        X_data = json.loads(X)
-        Y_data = json.loads(Y)
+        logging.info(f"Received Y: {Y}")
 
+        # Split the comma-separated values into lists
+        X_columns = X.split(",")  # Example: "feature1,feature2" → ["feature1", "feature2"]
+        Y_column = Y.strip()  # Example: "target"
 
-        # Read the CSV file and convert to DataFrame
+        # Read the CSV file into a Pandas DataFrame
         contents = await file.read()
         df = pd.read_csv(io.StringIO(contents.decode("utf-8")))
 
+        # Validate if columns exist in the uploaded file
+        for col in X_columns + [Y_column]:
+            if col not in df.columns:
+                raise HTTPException(status_code=400, detail=f"Column '{col}' not found in CSV")
 
-        # Example prediction logic
-        predictions = [1 if sum(x) > 5 else 0 for x in X_data]
+        # Extract feature (X) and target (Y) values from CSV
+        X_data = df[X_columns].values.tolist()  # Convert DataFrame to list of lists
+        Y_data = df[Y_column].tolist()  # Convert Series to list
 
+        logging.info(f"Extracted X_data: {X_data[:5]}")  # Log first 5 rows
+        logging.info(f"Extracted Y_data: {Y_data[:5]}")  # Log first 5 labels
+
+        # Example prediction logic (replace this with actual model inference)
+        predictions = [1 if sum(row) > 5 else 0 for row in X_data]  # Dummy logic
 
         return {"predictions": predictions}
+    
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
