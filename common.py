@@ -8,16 +8,18 @@ from holisticai.security.commons.data_minimization._modificators import Modifier
 from holisticai.security.commons.data_minimization._selectors import SelectorsHandler, SelectorType
 from holisticai.security.commons.data_minimization._core import DataMinimizer
 from typing import List, Optional
-from sklearn.linear_model import LogisticRegression
 from holisticai.security.commons._black_box_attack import BlackBoxAttack
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.feature_selection import SelectPercentile, VarianceThreshold, SelectFromModel
+
 import io
+from io import StringIO
 from fastapi import Request as request
-import json
+from sklearn.preprocessing import LabelEncoder
+
 import logging
 
 
@@ -152,73 +154,68 @@ class PredictionRequest(BaseModel):
 
 
 
-
 @app.post("/predict/")
 async def predict(
-    file: UploadFile = File(...),  # File upload
-    X: str = Form(...),  # Comma-separated feature column names
-    Y: str = Form(...),  # Target column name (single string)
+    file: UploadFile = File(...),
+    X: str = Form(...),
+    Y: str = Form(...),
 ):
     try:
-        logging.info(f"Received X: {X}")
-        logging.info(f"Received Y: {Y}")
-
-        # Split the comma-separated values into lists
-        X_columns = X.split(",")  # Example: "feature1,feature2" → ["feature1", "feature2"]
-        Y_column = Y.strip()  # Example: "target"
-
-        # Read the CSV file into a Pandas DataFrame
+        # Read CSV file
         contents = await file.read()
         df = pd.read_csv(io.StringIO(contents.decode("utf-8")))
 
-        # Validate if columns exist in the uploaded file
+        # Normalize column names (strip spaces)
+        df.columns = df.columns.str.strip()
+
+        # Extract feature and target columns from request
+        X_columns = [col.strip() for col in X.split(",")]
+        Y_column = Y.strip()
+
+        # Validate if requested columns exist in the dataset
         for col in X_columns + [Y_column]:
             if col not in df.columns:
                 raise HTTPException(status_code=400, detail=f"Column '{col}' not found in CSV")
 
-        # Extract feature (X) and target (Y) values from CSV
-        X_data = df[X_columns].values.tolist()  # Convert DataFrame to list of lists
-        Y_data = df[Y_column].tolist()  # Convert Series to list
+        # Extract the selected features
+        X_data = df[X_columns]
 
-        logging.info(f"Extracted X_data: {X_data[:5]}")  # Log first 5 rows
-        logging.info(f"Extracted Y_data: {Y_data[:5]}")  # Log first 5 labels
+        # Add predictions (dummy logic in this case)
+        predictions = [1 if sum(row) > 5 else 0 for row in X_data.values]
+        X_data["predictions"] = predictions
 
-        # Example prediction logic (replace this with actual model inference)
-        predictions = [1 if sum(row) > 5 else 0 for row in X_data]  # Dummy logic
+        # Optionally, include the target column
+        X_data[Y_column] = df[Y_column]
 
-        return {"predictions": predictions}
-    
+        # Return only the selected columns (features, target, and predictions)
+        return X_data.to_dict(orient="records")
+
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-
-
-
-
-# Define the modify_data endpoint
 @app.post("/modify_data/")
 async def modify_data(file: UploadFile = File(...), important_features: str = Form(...)):
     try:
         # Convert important_features from string to a list
         request = DataInput(important_features=important_features.split(","))
-       
+
         # Read the CSV file and convert to DataFrame
         contents = await file.read()
         df = pd.read_csv(io.StringIO(contents.decode("utf-8")))
 
-
-        # Extract features (X)
-        X_df = df.drop(columns=['target'])  # Assuming 'target' is the target column
-
+        # Remove the target column if it exists or modify as needed
+        if 'target' in df.columns:
+            X_df = df.drop(columns=['target'])
+        else:
+            # If no 'target' column exists, you might want to drop 'Species' or another column
+            X_df = df.drop(columns=['Species'])  # Adjust this based on your dataset structure
 
         # Initialize ModifierHandler with methods ("Average" and "Permutation")
         modifier_handler = ModifierHandler(methods=["Average", "Permutation"])
 
-
         # Apply the data modification methods
         modified_results = modifier_handler(X_df, request.important_features)
-
 
         # Prepare the response by collecting modified data for each method
         response = []
@@ -232,115 +229,138 @@ async def modify_data(file: UploadFile = File(...), important_features: str = Fo
                 )
             )
 
-
         return response
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-
+        return {"detail": str(e)}
 
 @app.post("/select_features/")
 async def select_features(file: UploadFile = File(...), selector_types: str = Form(...)):
     try:
+        if not selector_types:
+            raise HTTPException(status_code=400, detail="selector_types cannot be empty")
+        
         # Read the CSV file and convert to DataFrame
         contents = await file.read()
         df = pd.read_csv(io.StringIO(contents.decode("utf-8")))
 
+        # Check if 'target' or 'Species' column exists
+        if 'target' in df.columns:
+            target_column = 'target'
+        elif 'Species' in df.columns:
+            target_column = 'Species'
+        else:
+            raise HTTPException(status_code=400, detail="'target' or 'Species' column not found in the dataset")
+
+        # Encode the target column if needed
+        if target_column == 'Species':
+            label_encoder = LabelEncoder()
+            df['target'] = label_encoder.fit_transform(df['Species'])
+            target_column = 'target'  # Now use the numeric 'target' column
+
+        # Encode all categorical features in the dataset, if any
+        categorical_cols = df.select_dtypes(include=['object']).columns
+        for col in categorical_cols:
+            if col != target_column:  # Do not encode the target column
+                le = LabelEncoder()
+                df[col] = le.fit_transform(df[col])
 
         # Extract features (X) and target (y) from the DataFrame
-        X_df = df.drop(columns=['target'])  # Assuming 'target' is the target column
-        y_series = df['target'] if 'target' in df else None  # Target is optional
+        X_df = df.drop(columns=[target_column])  # Drop the target column
+        y_series = df[target_column]  # Use target_column, which is now numeric
 
+        # Scale the features using StandardScaler
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X_df)
 
         # Convert DataFrame to list of lists for X and list for y
-        X = X_df.values.tolist()  # List of lists for features
-        y = y_series.values.tolist() if y_series is not None else None  # List for target
+        X = X_scaled.tolist()  # List of lists for features after scaling
+        y = y_series.values.tolist()  # List for target
 
+        logging.debug(f"X: {X}")
+        logging.debug(f"y: {y}")
+        logging.debug(f"selector_types: {selector_types}")
 
         # Construct the SelectorRequest object
         selector_request = SelectorRequest(X=X, y=y, selector_types=[SelectorType(x) for x in selector_types.split(',')])
 
-
         # List to store selected features for each selector type
         selected_features = []
 
-
         # Loop through the requested selector types
         for selector_type in selector_request.selector_types:
+            logging.debug(f"Processing selector type: {selector_type}")
             if selector_type == SelectorType.percentile:
                 selector = selectors_handler["percentile"]
-                selector.fit(X_df, y_series)
+                selector.fit(X_scaled, y_series)
                 selected_features_indexes = selector.get_support()
-                selected_features_list = list(selected_features_indexes.nonzero()[0])  # Get selected indices
-
+                selected_features_list = list(selected_features_indexes.nonzero()[0])
 
             elif selector_type == SelectorType.variance:
                 selector = selectors_handler["variance"]
-                selector.fit(X_df)
+                selector.fit(X_scaled)
                 selected_features_indexes = selector.get_support()
-                selected_features_list = list(selected_features_indexes.nonzero()[0])  # Get selected indices
-
+                selected_features_list = list(selected_features_indexes.nonzero()[0])
 
             elif selector_type == SelectorType.model:
                 selector = selectors_handler["model"]
-                selector.fit(X_df, y_series)
-                selected_features_list = selector.get_support(indices=True)  # Get indices of selected features
+                selector.fit(X_scaled, y_series)
+                selected_features_list = selector.get_support(indices=True)
 
-
-            # Add selected features for this selector type to the response list
+            logging.debug(f"Selected features for {selector_type}: {selected_features_list}")
             selected_features.append(
                 FeatureSelectionResponse(
-                    selector_type=selector_type,
+                    selector_type=str(selector_type),  # Convert enum to string
                     selected_features=selected_features_list
                 )
             )
 
-
-        # Ensure the response is a proper JSON-serializable format (list of Pydantic models)
+        # Return the response
         return {"selected_features": selected_features}
 
-
     except Exception as e:
+        logging.error(f"Error: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
-   
+
+
 
 
 @app.post("/blackbox-attack")
-async def blackbox_attack(file: UploadFile = File(...), attack_feature: str = "sensitive_column"):
+async def blackbox_attack(file: UploadFile = File(...), attack_feature: str = "gender"):  # Default attack feature 'gender'
     try:
         contents = await file.read()
         df = pd.read_csv(io.StringIO(contents.decode("utf-8")))
 
-
+        # Check if the attack feature exists in the dataset
         if attack_feature not in df.columns:
             raise HTTPException(status_code=400, detail=f"Column '{attack_feature}' not found in dataset")
 
+        # Assuming 'income' is the label column and everything else is features
+        X = df.drop(columns=['income'])  # Drop the 'income' column from features
+        y = df['income']  # Set 'income' as the label
 
-        X = df.iloc[:, :-1]
-        y = df.iloc[:, -1]
-
-
+        # Convert categorical columns to category type for preprocessing
         for col in X.select_dtypes(include=["object"]).columns:
             X[col] = X[col].astype("category")
 
-
+        # Create a preprocessor
         preprocessor = create_preprocessor(X)
-       
+
+        # Initialize the BlackBoxAttack with RandomForestClassifier as the estimator
         attacker = BlackBoxAttack(attacker_estimator=Pipeline([
             ("preprocessor", preprocessor),
             ("estimator", RandomForestClassifier())
         ]), attack_feature=attack_feature)
-       
+
+        # Fit the attacker model
         attacker.fit(X, y)
-       
+
+        # Perform the attack and get predicted labels
         y_attack, y_pred_attack = attacker.transform(X, y)
-       
+
+        # Calculate attack accuracy
         accuracy = np.mean(y_attack == y_pred_attack)
 
-
         return {"attack_feature": attack_feature, "attack_success_rate": accuracy}
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
