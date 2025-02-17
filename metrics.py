@@ -1,6 +1,8 @@
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from typing import List, Dict, Any, Union, Callable
 import pandas as pd
+import numpy as np
+from sklearn.preprocessing import LabelEncoder
 import io
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from holisticai.security.commons import BlackBoxAttack
@@ -43,6 +45,19 @@ async def compute_metrics(
     contents = await file.read()
     df = pd.read_csv(io.BytesIO(contents))
     
+    # Debugging: Print available columns
+    print("Available Columns:", df.columns.tolist())
+
+    # Validate column existence
+    missing_qi = [col for col in qi if col not in df.columns]
+    missing_sa = [col for col in sa if col not in df.columns]
+
+    if missing_qi:
+        return {"error": f"Quasi-identifier columns not found: {missing_qi}"}
+    
+    if missing_sa:
+        return {"error": f"Sensitive attribute columns not found: {missing_sa}"}
+
     k_anonymity_metric = k_anonymity(df, qi).to_dict()
     l_diversity_metric = {key: tuple(value) for key, value in l_diversity(df, qi, sa).items()}
     
@@ -50,8 +65,6 @@ async def compute_metrics(
         "k_anonymity": k_anonymity_metric,
         "l_diversity": l_diversity_metric
     }
-
-
 
 @app.post("/attribute_attack_score/")
 async def calculate_attack_score(
@@ -64,19 +77,35 @@ async def calculate_attack_score(
     contents = await file.read()
     df = pd.read_csv(StringIO(contents.decode('utf-8')))  # Use StringIO to convert byte data to a file-like object
 
-    # Separate features and target variable from the CSV file
-    X = df.iloc[:, :-1]  # All columns except the last one (features)
-    y = df.iloc[:, -1]   # The last column (target)
+    # Clean column names (remove leading/trailing spaces)
+    df.columns = df.columns.str.strip()
+
+    # Check if required columns exist
+    required_columns = ['V1', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7', 'V8', 'V9', 'V10', 'V11', 'V12', 'V13', 'V14', 'V15', 'V16', 'V17', 'V18', 'V19', 'V20', 'V21', 'V22', 'V23', 'V24', 'V25', 'V26', 'V27', 'V28', 'Amount', 'Class']
+    missing_columns = [col for col in required_columns if col not in df.columns]
+    if missing_columns:
+        return {"error": f"Missing columns: {', '.join(missing_columns)}"}
+
+    # Select features and target variable (V1, V2, ..., V28 and Amount as features)
+    X = df[['V1', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7', 'V8', 'V9', 'V10', 'V11', 'V12', 'V13', 'V14', 'V15', 'V16', 'V17', 'V18', 'V19', 'V20', 'V21', 'V22', 'V23', 'V24', 'V25', 'V26', 'V27', 'V28', 'Amount']]  # Features
+    y = df['Class']  # Target: Class (0 or 1)
+
+    # Ensure that the target is a binary classification target (0 or 1)
+    if not y.isin([0, 1]).all():
+        return {"error": "Target variable 'Class' must be binary (0 or 1)."}
 
     # Split the data into train and test sets
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=1-attack_train_ratio, random_state=42)
 
-    # Check if the target variable is continuous or categorical
-    is_continuous = y_train.dtype.kind in ['f', 'i'] and len(y_train.unique()) > 2
+    # Check if the attack feature is numeric (continuous) or categorical
+    if pd.api.types.is_numeric_dtype(X[attribute_attack]):
+        is_continuous = True
+    else:
+        is_continuous = False
 
     # Adjust the metric_fn based on whether the task is classification or regression
     if is_continuous:
-        # For regression, we can use metrics like MSE, MAE, or R2
+        # For continuous features, use regression metrics like MSE, MAE, or R2
         if metric_fn == "mean_squared_error":
             metric_fn = mean_squared_error
         elif metric_fn == "mean_absolute_error":
@@ -108,6 +137,7 @@ async def calculate_attack_score(
         return {"message": "Score calculated successfully", "score": score}
     except Exception as e:
         return {"error": str(e)}
+
 
 
 
